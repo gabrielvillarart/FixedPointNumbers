@@ -1,2 +1,2 @@
 # FixedPointNumbers
- Fixed point number library
+This is a solution for precise fixed-point number classes.<br />
