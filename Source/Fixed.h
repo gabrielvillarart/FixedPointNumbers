@@ -19,31 +19,44 @@ struct fixed_utils
 	};
 };
 
-template<typename underlying_type, underlying_type precision>
+template<typename underlying_type, std::make_unsigned_t<underlying_type> precision>
 class fixed
 {
 	static_assert(std::is_integral_v<underlying_type>, "fixed::underlying_type must be an integer type.");
 
 public:
-	using underlying_type_unsigned = std::make_unsigned_t<underlying_type>;
+	using underlying_unsigned = std::make_unsigned_t<underlying_type>;
 
+	constexpr static bool is_underlying_signed = std::is_signed_v<underlying_type>;
+
+	constexpr static underlying_unsigned wholes_precision = (sizeof(underlying_type) * 8) - precision;
+	constexpr static underlying_unsigned half_precision = precision / 2;
+	constexpr static underlying_unsigned half_precision_mask = underlying_type(-1) << half_precision;
+	constexpr static underlying_unsigned precision_remainder = precision % 2;
+	constexpr static underlying_unsigned half_precision_plus_remainder = half_precision + precision_remainder;
+	
+	constexpr static underlying_unsigned whole_mask = wholes_precision ? underlying_unsigned(-1) << precision : underlying_unsigned(0);
+	constexpr static underlying_unsigned decimals_mask = ~whole_mask;
+	constexpr static underlying_unsigned sign_mask = 
+		is_underlying_signed ? 
+		underlying_type(1) << (sizeof(underlying_type) * 8 - 1) :
+		underlying_type(0);
+
+	constexpr static underlying_type unsign_mask = ~sign_mask;
+
+	constexpr static underlying_type one = (underlying_unsigned)(decimals_mask) + (underlying_unsigned)1;
+	constexpr static underlying_type half = one / 2;
+	
 	constexpr static underlying_type max_value = 
-		std::is_signed_v<underlying_type> ? 
-		underlying_type_unsigned(-1) >> underlying_type_unsigned(1) :
+		is_underlying_signed ? 
+		underlying_unsigned(-1) >> underlying_unsigned(1) :
 		underlying_type(-1);
+
+	constexpr static underlying_type max_int = max_value & underlying_type(whole_mask);
 
 	constexpr static underlying_type min_value = ~(max_value);
 
-	constexpr static underlying_type whole_mask = underlying_type(-1) << precision;
-	constexpr static underlying_type decimals_mask = ~whole_mask;
-	constexpr static uint64 one = (uint64)(decimals_mask) + (uint64)1;
-	constexpr static uint64 half = one / 2;
-	
-	constexpr static uint64 wholes_precision = (sizeof(underlying_type) * 8) - precision;
-	constexpr static underlying_type half_precision = precision / 2;
-	constexpr static underlying_type half_precision_mask = underlying_type(-1) << half_precision;
-	constexpr static underlying_type precision_remainder = precision % 2;
-	constexpr static underlying_type half_precision_plus_remainder = half_precision + precision_remainder;
+	constexpr static underlying_type min_int = min_value & whole_mask;
 
 	
 public:
@@ -52,6 +65,7 @@ public:
 	template<uint32 string_length>
 	using string_literal = const char(&)[string_length];
 
+	// Construction with string literal.
 	template<uint32 string_length>
 	constexpr fixed(string_literal<string_length> string)
 	{
@@ -123,9 +137,8 @@ public:
 			decimals = (decimals + half) >> shift;
 		}
 
-		if constexpr (std::is_signed_v<underlying_type>)
+		if constexpr (is_underlying_signed)
 		{
-
 			if (is_negative) // Negative
 			{
 				uint64 result = ~(wholes + decimals) + 1;
@@ -161,94 +174,172 @@ public:
 public:
 	constexpr fixed operator+(fixed other) const
 	{
-		using uT = underlying_type_unsigned;
-
 		fixed sum;
-		sum.underlying_value = std::bit_cast<uT>(underlying_value) + std::bit_cast<uT>(other.underlying_value);
+		sum.underlying_value = underlying_unsigned(underlying_value) + underlying_unsigned(other.underlying_value);
 		return sum;
 	}
 
 	constexpr fixed operator-(fixed other) const
 	{
-		using uT = underlying_type_unsigned;
-
 		fixed difference;
-		difference.underlying_value = std::bit_cast<uT>(underlying_value) - std::bit_cast<uT>(other.underlying_value);
+		difference.underlying_value = underlying_unsigned(underlying_value) - underlying_unsigned(other.underlying_value);
 		return difference;
 	}
 
-	constexpr fixed operator*(fixed other) const
+	constexpr inline fixed operator*(fixed factor) const
 	{
-		//using uT = underlying_type_unsigned;
-		using uT = underlying_type;
+		if constexpr (is_underlying_signed)
+		{
+			const underlying_unsigned this_value = underlying_unsigned(
+				(underlying_value < underlying_type(0)) ? 
+				-underlying_value : 
+				underlying_value
+			);
 
-		const uT this_value = std::bit_cast<uT>(underlying_value); 
-		const uT other_value = std::bit_cast<uT>(other.underlying_value); 
+			const underlying_unsigned factor_value =  underlying_unsigned(
+				factor.underlying_value < underlying_type(0) ? 
+				-factor.underlying_value : 
+				factor.underlying_value
+			); 
 
-		uT decimals = this_value * other_value;
-		decimals >>= uT(precision);
-		decimals &= ~half_precision_mask;
+			const underlying_type sign = (factor.underlying_value ^ underlying_value) & sign_mask; 
 
-		uT overflow = (this_value >> uT(half_precision)) * (other_value >> uT(half_precision_plus_remainder));
+			underlying_unsigned half_decimals;
+			half_decimals = this_value * factor_value;
+			half_decimals >>= precision;
+			half_decimals &= ~half_precision_mask;
 
-		uT ret = decimals | overflow;
+			underlying_unsigned factor_half_and_wholes;
+			factor_half_and_wholes = (this_value >> half_precision) * (factor_value >> half_precision_plus_remainder);
 
-		fixed product;
-		product.underlying_value = std::bit_cast<underlying_type>(ret);
-		return product;
+			fixed product;
+			product.underlying_value = underlying_type(factor_half_and_wholes | half_decimals);
+			if (sign)
+				product.underlying_value = -product.underlying_value;
+
+			return product;
+		}
+		else
+		{
+			const underlying_unsigned& this_value = underlying_value; 
+			const underlying_unsigned& factor_value = factor.underlying_value; 
+
+			if constexpr (wholes_precision)
+			{
+				underlying_unsigned half_decimals;
+				half_decimals = this_value * factor_value;
+				half_decimals >>= precision;
+				half_decimals &= ~half_precision_mask;
+
+				underlying_unsigned factor_half_and_wholes;
+				factor_half_and_wholes = (this_value >> half_precision) * (factor_value >> half_precision_plus_remainder);
+
+				fixed product;
+				product.underlying_value = underlying_type(factor_half_and_wholes | half_decimals);
+
+				return product;
+			}
+			else
+			{
+				underlying_unsigned factor_half_and_wholes;
+				factor_half_and_wholes = (this_value >> half_precision) * (factor_value >> half_precision_plus_remainder);
+
+				fixed product;
+				product.underlying_value = underlying_type(factor_half_and_wholes);
+
+				return product;
+			}
+
+		}
 	}
 
-	constexpr fixed operator/(fixed other) const
+	constexpr fixed operator/(fixed other) const noexcept
 	{
-		fixed product;
-		product.underlying_value = (underlying_value << half_precision) / (other.underlying_value << half_precision) << precision;
-		product.underlying_value &= half_precision_mask;
-		return product;
+		// To be developed.
+		fixed quoeficient;
+		return quoeficient;
 	}
 	
+private:
+    template <typename intType, typename std::enable_if<std::is_integral<intType>::value>::type* = nullptr>
+	static constexpr underlying_type init_underlyind_with_int(intType value)
+	{
+		constexpr bool is_input_signed = std::is_signed_v<intType>;
+
+		if constexpr (is_underlying_signed && is_input_signed)
+		{
+			return value < intType(0) ? 
+				-underlying_type(underlying_unsigned(-value) << precision) :
+				underlying_type(underlying_unsigned(value) << precision);
+		}
+		else if constexpr (is_underlying_signed)
+		{
+			return underlying_type(underlying_unsigned(value) << precision);
+		}
+		else if constexpr (is_input_signed)
+		{
+			return value < intType(0) ? 
+				underlying_type(underlying_unsigned(-value) << precision) :
+				underlying_type(underlying_unsigned(value) << precision);
+		}
+		else
+		{
+			return underlying_type(value) << precision;
+		}
+	}
+
 public:
-	constexpr operator int32() const
-	{
+    // Construction from a integral type
+    template <typename intType, typename std::enable_if<std::is_integral<intType>::value>::type* = nullptr>
+    constexpr fixed(intType value) noexcept
+		: underlying_value(init_underlyind_with_int(value))
+    {}
+
+    // Construction from a floating-point type
+    template <typename floatType, typename std::enable_if<std::is_floating_point<floatType>::value>::type* = nullptr>
+    constexpr fixed(floatType value) noexcept
+		: underlying_value()
+    {}
+
+
+    // Conversion to an integral type
+    template <typename intType, typename std::enable_if<std::is_integral<intType>::value>::type* = nullptr>
+    constexpr inline operator intType() const noexcept
+    {
 		if constexpr (wholes_precision == 0)
 			return 0;
+		
+		if constexpr (is_underlying_signed)
+		{
+			if (underlying_value >= max_int)
+			{
+				return underlying_type(underlying_unsigned(max_int & unsign_mask) >> precision);
+			}
 
-		underlying_type ret = underlying_value + half;
-		ret = ret >> precision;
-		return int32(ret);
-	}
+			if (underlying_value & sign_mask)
+			{
+				return -underlying_type(underlying_unsigned(-underlying_value) >> precision);
+			}
+			return underlying_type(underlying_unsigned(underlying_value) >> precision);
+		}
+		else
+		{
+			return static_cast<intType>(
+				underlying_value >= max_int ?
+				max_int >> precision :
+				(underlying_value + half) >> precision
+			);
+		}
 
-	constexpr operator int64() const
-	{
-		if constexpr (wholes_precision == 0)
-			return 0;
+    }
 
-		underlying_type ret = underlying_value + half;
-		return int64(ret);
-	}
-
-	constexpr fixed(double value)
-	{
-		constexpr double cached_conversion_from_double = (double)((uint64)1 << (uint64)precision);
-		underlying_value = (value * cached_conversion_from_double);
-	}
-
-	constexpr operator double() const
-	{
-		constexpr double cached_conversion_to_double = 0.0625 / (double)((uint64)1 << ((uint64)precision - (uint64)4));
-
-		return (double)underlying_value * cached_conversion_to_double;
-
-		//if constexpr (wholes_precision > 0)
-		//{
-		//	underlying_type integer = underlying_value >> precision;
-		//	underlying_type decimals = underlying_value & decimals_mask;
-
-		//	return (double)(integer) + ((double)decimals * cached_conversion_to_double);
-		//}
-		//else
-		//{
-		//}
-	}
+    // Conversion to a floating-point type
+    template <typename floatType, typename std::enable_if<std::is_floating_point<floatType>::value>::type* = nullptr>
+    constexpr inline operator floatType() const noexcept
+    {
+		constexpr floatType conversion_factor = floatType(0.0625 / double(underlying_unsigned(1) << (precision - underlying_unsigned(4))));
+        return static_cast<floatType>(underlying_value) * conversion_factor;
+    }
 
 private:
 	underlying_type underlying_value = {};
